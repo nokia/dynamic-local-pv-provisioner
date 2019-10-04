@@ -24,12 +24,15 @@ func GetNodeByLabel(label string, kubeClient kubernetes.Interface) (v1.Node, err
 	}
 	switch nodesLen := len(nodeList.Items); nodesLen {
 	case 0:
-		return v1.Node{}, errors.New("ERROR: No nodes found for label:" + label + "!")
+		return v1.Node{}, errors.New("No nodes found for label:" + label + "!")
 	case 1:
 		return nodeList.Items[0], nil
 	default:
 		for _, node := range nodeList.Items {
-			nodeCapacity := node.Status.Capacity["lv-capacity"]
+			nodeCapacity, ok := node.Status.Capacity["lv-capacity"]
+			if !ok {
+				return returnNode, errors.New("No lv-capacity set, yet!")
+			}
 			if (&nodeCapacity).CmpInt64(maxCapacity) == 1 {
 				maxCapacity = (&nodeCapacity).Value()
 				returnNode = node
@@ -43,7 +46,7 @@ func UpdatePvc(pvc v1.PersistentVolumeClaim, kubeClient kubernetes.Interface) er
 	log.Printf("DEBUG: UpdatePvc PVC for update: %+v\n", pvc)
 	result, err := kubeClient.CoreV1().PersistentVolumeClaims(pvc.ObjectMeta.Namespace).Update(&pvc)
 	if err != nil {
-		return errors.New("ERROR: Cannot update pvc because: " + err.Error())
+		return err
 	}
 	log.Printf("DEBUG: UpdatePvc result:  %+v\n", result)
 	return nil
@@ -52,7 +55,7 @@ func UpdatePvc(pvc v1.PersistentVolumeClaim, kubeClient kubernetes.Interface) er
 func GetNode(nodeName string, kubeClient kubernetes.Interface) (*v1.Node, error) {
 	node, err := kubeClient.CoreV1().Nodes().Get(nodeName, metav1.GetOptions{})
  	if err != nil {
-		return nil, errors.New("ERROR: Cannot get node (" + nodeName + ") because: " + err.Error())
+		return nil, err
 	}
 	return node, nil
 }
@@ -60,7 +63,7 @@ func GetNode(nodeName string, kubeClient kubernetes.Interface) (*v1.Node, error)
 func UpdateNodeStatus(nodeName string, kubeClient kubernetes.Interface, node *v1.Node) error {
 	updatenode, err := kubeClient.CoreV1().Nodes().UpdateStatus(node)
 	if err != nil {
-		return errors.New("ERROR: Cannot update node staus of node (" + nodeName + ") because: " + err.Error())
+		return err
 	}
 	log.Printf("DEBUG: UpdateNodeStatus: %+v\n", updatenode)
 	return nil

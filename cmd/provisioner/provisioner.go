@@ -41,7 +41,7 @@ func main() {
 	provisioner := Provisoner{
 		k8sClient : client,
 	}
-	kubeInformerFactory := informers.NewSharedInformerFactory(provisioner.k8sClient, time.Second*30)
+	kubeInformerFactory := informers.NewSharedInformerFactory(provisioner.k8sClient, time.Second*10)
 	provisonerController := kubeInformerFactory.Core().V1().PersistentVolumeClaims().Informer()
 	provisonerController.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) { provisioner.pvcAdded(*(reflect.ValueOf(obj).Interface().(*v1.PersistentVolumeClaim))) },
@@ -89,10 +89,13 @@ func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
 	selector, _ := pvc.ObjectMeta.Annotations["nodeselector"]
 	log.Println("DEBUG: Selector: " + selector)
 	node, err := k8sclient.GetNodeByLabel(selector, provisioner.k8sClient)
-	log.Printf("DEBUG: Choosen node: %+v\n", node)
 	if err != nil {
 		log.Println("ERROR: Cannot query node by label, because: " + err.Error())
 		return
+	}
+	log.Printf("DEBUG: Choosen node: %+v\n", node)
+	if pvc.ObjectMeta.Annotations == nil {
+		pvc.ObjectMeta.Annotations = make(map[string]string)
 	}
 	pvc.ObjectMeta.Annotations["nodename"] = node.ObjectMeta.Name
 	// test if could be updated

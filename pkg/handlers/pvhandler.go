@@ -6,6 +6,7 @@ import (
 	"time"
 	"reflect"
 	"errors"
+	"strings"
 	syscall "golang.org/x/sys/unix"
 	"github.com/nokia/dynamic-local-pv-provisioner/pkg/k8sclient"
 
@@ -59,6 +60,10 @@ func (pvHandler *PvHandler) CreateController() cache.Controller {
 
 func (pvHandler *PvHandler) pvAdded(pv v1.PersistentVolume) {
 	log.Printf("PV Added: %+v\n", pv)
+	if !handlePv(pv) {
+		log.Println("DEBUG: PV Added - Not my job...")
+		return
+	}
 	err := pvHandler.decreaseStorageCap(pv)
 	if err != nil{
 		log.Println("ERROR: PV Added failed: " + err.Error())
@@ -69,6 +74,10 @@ func (pvHandler *PvHandler) pvAdded(pv v1.PersistentVolume) {
 
 func (pvHandler *PvHandler) pvDeleted(pv v1.PersistentVolume) {
 	log.Printf("DEBUG: PV Deleted: %+v\n", pv)
+	if !handlePv(pv) {
+		log.Println("DEBUG: PV Deleted - Not my job...")
+		return
+	}
 	err := pvHandler.increaseStorageCap(pv)
 	if err != nil{
 		log.Println("ERROR: PV Delete failed: " + err.Error())
@@ -77,18 +86,28 @@ func (pvHandler *PvHandler) pvDeleted(pv v1.PersistentVolume) {
 	log.Println("DEBUG: PV Delete successfull")
 }
 
+func handlePv(pv v1.PersistentVolume) bool {
+	nodeselector := pv.Spec.NodeAffinity.Required.String()
+	if strings.Contains(nodeselector, os.Getenv("NODE_NAME")) {
+		log.Println("DEBUG: handle PV")
+		return true
+	}
+	log.Println("DEBUG: nodeselector: " + nodeselector)
+	return false
+}
+
 func (pvHandler *PvHandler) increaseStorageCap(pv v1.PersistentVolume) error{
 	pvCapacity := pv.Spec.Capacity["storage"]
 	node, err := k8sclient.GetNode(pvHandler.nodeName, pvHandler.k8sClient)
 	if err != nil{
-		return err
+		return errors.New("Cannot get node(" + pvHandler.nodeName + "), because: " + err.Error())
 	}
 	nodeCap := node.Status.Capacity["lv-capacity"]
 	(&nodeCap).Add(pvCapacity)
 	node.Status.Capacity["lv-capacity"] = nodeCap
 	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
 	if err != nil{
-		return err
+		return errors.New("Cannot update node(" + pvHandler.nodeName + "), because: " + err.Error())
 	}
 	return nil
 }
@@ -97,7 +116,7 @@ func (pvHandler *PvHandler) decreaseStorageCap(pv v1.PersistentVolume) error{
 	pvCapacity := pv.Spec.Capacity["storage"]
 	node, err := k8sclient.GetNode(pvHandler.nodeName, pvHandler.k8sClient)
 	if err != nil{
-		return err
+		return errors.New("Cannot get node(" + pvHandler.nodeName + "), because: " + err.Error())
 	}
 	log.Printf("DEBUG: dec pv-capacity: %+v\n", pvCapacity)
 	nodeCap := node.Status.Capacity["lv-capacity"]
@@ -105,7 +124,7 @@ func (pvHandler *PvHandler) decreaseStorageCap(pv v1.PersistentVolume) error{
 	node.Status.Capacity["lv-capacity"] = nodeCap
 	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
 	if err != nil{
-		return err
+		return errors.New("Cannot update node(" + pvHandler.nodeName + "), because: " + err.Error())
 	}
 	return nil
 }
@@ -113,13 +132,13 @@ func (pvHandler *PvHandler) decreaseStorageCap(pv v1.PersistentVolume) error{
 func createLVCapacityResource(nodeName string, lvCapacity int64, kubeClient kubernetes.Interface) error {
 	node, err := k8sclient.GetNode(nodeName, kubeClient)
 	if err != nil{
-		return err
+		return errors.New("Cannot get node(" + nodeName + "), because: " + err.Error())
 	}
 	lvCapQuantity := resource.NewQuantity(lvCapacity, resource.BinarySI)
 	node.Status.Capacity["lv-capacity"] = *lvCapQuantity
 	err = k8sclient.UpdateNodeStatus(nodeName, kubeClient, node)
 	if err != nil{
-		return err
+		return errors.New("Cannot update node(" + nodeName + "), because: " + err.Error())
 	}
 	return nil
 }
@@ -128,7 +147,7 @@ func lvmAvailableCapacity (lvPath string) (int64, error) {
 	fs := syscall.Statfs_t{}
 	err := syscall.Statfs(lvPath, &fs)
 	if err != nil {
-		return 0, errors.New("ERROR: Cannot get FS info from: " + lvPath + " because: " + err.Error())
+		return 0, errors.New("Cannot get FS info from: " + lvPath + " because: " + err.Error())
 	}
 	log.Printf("DEBUG: Availabe blocks: %d , int64: %d , Block size: %d",fs.Bavail, int64(fs.Bavail), fs.Bsize)
 	return int64(fs.Bavail) * fs.Bsize, nil
