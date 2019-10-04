@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"time"
 	"reflect"
+	"strings"
+	"encoding/json"
 	syscall "golang.org/x/sys/unix"
 	"github.com/nokia/dynamic-local-pv-provisioner/pkg/k8sclient"
 
@@ -17,15 +19,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// const ()
-//
 var (
 	kubeConfig 	string
 	// storagePath string
 )
 
 type Provisoner struct {
-	k8sClient 	kubernetes.Interface
+	k8sClient kubernetes.Interface
 }
 
 func main() {
@@ -39,7 +39,7 @@ func main() {
 		log.Fatal("ERROR: Get k8s client: " + err.Error())
 	}
 	provisioner := Provisoner{
-		k8sClient : client,
+		k8sClient: client,
 	}
 	kubeInformerFactory := informers.NewSharedInformerFactory(provisioner.k8sClient, time.Second*10)
 	provisonerController := kubeInformerFactory.Core().V1().PersistentVolumeClaims().Informer()
@@ -67,7 +67,7 @@ func main() {
 
 func (provisioner *Provisoner) pvcAdded(pvc v1.PersistentVolumeClaim) {
 	log.Printf("DEBUG: PROVISIONER PVC Added: %+v\n", pvc)
-	_, nodeNameOk := pvc.ObjectMeta.Annotations["nodename"]
+	_, nodeNameOk := pvc.ObjectMeta.Annotations[k8sclient.NodeName]
 	if !nodeNameOk && (pvc.Status.Phase != v1.ClaimBound) {
 		provisioner.handlePvc(pvc)
 	} else {
@@ -77,7 +77,7 @@ func (provisioner *Provisoner) pvcAdded(pvc v1.PersistentVolumeClaim) {
 
 func (provisioner *Provisoner) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim) {
 	log.Printf("DEBUG: PROVISIONER PVC Added: %+v\n", newPvc)
-	_, nodeNameOk := newPvc.ObjectMeta.Annotations["nodename"]
+	_, nodeNameOk := newPvc.ObjectMeta.Annotations[k8sclient.NodeName]
 	if !nodeNameOk && (newPvc.Status.Phase != v1.ClaimBound) {
 		provisioner.handlePvc(newPvc)
 	} else {
@@ -86,7 +86,21 @@ func (provisioner *Provisoner) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPv
 }
 
 func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
-	selector, _ := pvc.ObjectMeta.Annotations["nodeselector"]
+	nodeSelectorMap := make(map[string]string)
+	if nodeSel, ok := pvc.ObjectMeta.Annotations[k8sclient.NodeSelector]; ok {
+		if nodeSel != "" {
+			err := json.Unmarshal([]byte(nodeSel),&nodeSelectorMap)
+			if err != nil {
+				log.Println("ERROR: Cannot parse nodeselector "+ nodeSel +" because: " + err.Error())
+				return
+			}
+		}
+	}
+	s := []string{}
+	for key, value := range nodeSelectorMap {
+		s = append(s, key + "=" + value)
+	}
+	selector := strings.Join(s,",")
 	log.Println("DEBUG: Selector: " + selector)
 	node, err := k8sclient.GetNodeByLabel(selector, provisioner.k8sClient)
 	if err != nil {
@@ -97,7 +111,7 @@ func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
 	if pvc.ObjectMeta.Annotations == nil {
 		pvc.ObjectMeta.Annotations = make(map[string]string)
 	}
-	pvc.ObjectMeta.Annotations["nodename"] = node.ObjectMeta.Name
+	pvc.ObjectMeta.Annotations[k8sclient.NodeName] = node.ObjectMeta.Name
 	// test if could be updated
 	pvc.ObjectMeta.ResourceVersion = ""
 	err = k8sclient.UpdatePvc(pvc, provisioner.k8sClient)

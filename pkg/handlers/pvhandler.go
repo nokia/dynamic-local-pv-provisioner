@@ -19,9 +19,9 @@ import (
 )
 
 type PvHandler struct {
-	nodeName 		string
+	nodeName    string
 	storagePath string
-	k8sClient 	kubernetes.Interface
+	k8sClient   kubernetes.Interface
 }
 
 func NewPvHandler(storagePath string, cfg *rest.Config) (*PvHandler, error) {
@@ -30,11 +30,11 @@ func NewPvHandler(storagePath string, cfg *rest.Config) (*PvHandler, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodename := os.Getenv("NODE_NAME")
+	nodeName := os.Getenv("NODE_NAME")
 	pvHandler := PvHandler{
-		nodeName :		nodename,
-		storagePath: 	storagePath,
-		k8sClient: 		kubeClient,
+		nodeName:    nodeName,
+		storagePath: storagePath,
+		k8sClient:   kubeClient,
 	}
 	log.Println("DEBUG: pvHandler setted")
 	lvCap, err := lvmAvailableCapacity(storagePath)
@@ -42,7 +42,7 @@ func NewPvHandler(storagePath string, cfg *rest.Config) (*PvHandler, error) {
 		return nil, err
 	}
 	log.Printf("DEBUG: lvmCap determined, lvcap: %d", lvCap)
-	err = createLVCapacityResource(nodename, lvCap, kubeClient)
+	err = createLVCapacityResource(nodeName, lvCap, kubeClient)
 	log.Println("DEBUG: after patch")
 	return &pvHandler, err
 }
@@ -60,7 +60,7 @@ func (pvHandler *PvHandler) CreateController() cache.Controller {
 
 func (pvHandler *PvHandler) pvAdded(pv v1.PersistentVolume) {
 	log.Printf("PV Added: %+v\n", pv)
-	if !handlePv(pv) {
+	if !pvHandler.handlePv(pv) {
 		log.Println("DEBUG: PV Added - Not my job...")
 		return
 	}
@@ -74,7 +74,7 @@ func (pvHandler *PvHandler) pvAdded(pv v1.PersistentVolume) {
 
 func (pvHandler *PvHandler) pvDeleted(pv v1.PersistentVolume) {
 	log.Printf("DEBUG: PV Deleted: %+v\n", pv)
-	if !handlePv(pv) {
+	if !pvHandler.handlePv(pv) {
 		log.Println("DEBUG: PV Deleted - Not my job...")
 		return
 	}
@@ -86,13 +86,13 @@ func (pvHandler *PvHandler) pvDeleted(pv v1.PersistentVolume) {
 	log.Println("DEBUG: PV Delete successfull")
 }
 
-func handlePv(pv v1.PersistentVolume) bool {
-	nodeselector := pv.Spec.NodeAffinity.Required.String()
-	if strings.Contains(nodeselector, os.Getenv("NODE_NAME")) {
+func (pvHandler *PvHandler) handlePv(pv v1.PersistentVolume) bool {
+	nodeSelector := pv.Spec.NodeAffinity.Required.String()
+	if strings.Contains(nodeSelector, pvHandler.nodeName) {
 		log.Println("DEBUG: handle PV")
 		return true
 	}
-	log.Println("DEBUG: nodeselector: " + nodeselector)
+	log.Println("DEBUG: nodeselector: " + nodeSelector)
 	return false
 }
 
@@ -102,9 +102,9 @@ func (pvHandler *PvHandler) increaseStorageCap(pv v1.PersistentVolume) error{
 	if err != nil{
 		return errors.New("Cannot get node(" + pvHandler.nodeName + "), because: " + err.Error())
 	}
-	nodeCap := node.Status.Capacity["lv-capacity"]
+	nodeCap := node.Status.Capacity[k8sclient.LvCapacity]
 	(&nodeCap).Add(pvCapacity)
-	node.Status.Capacity["lv-capacity"] = nodeCap
+	node.Status.Capacity[k8sclient.LvCapacity] = nodeCap
 	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
 	if err != nil{
 		return errors.New("Cannot update node(" + pvHandler.nodeName + "), because: " + err.Error())
@@ -119,9 +119,9 @@ func (pvHandler *PvHandler) decreaseStorageCap(pv v1.PersistentVolume) error{
 		return errors.New("Cannot get node(" + pvHandler.nodeName + "), because: " + err.Error())
 	}
 	log.Printf("DEBUG: dec pv-capacity: %+v\n", pvCapacity)
-	nodeCap := node.Status.Capacity["lv-capacity"]
+	nodeCap := node.Status.Capacity[k8sclient.LvCapacity]
 	(&nodeCap).Sub(pvCapacity)
-	node.Status.Capacity["lv-capacity"] = nodeCap
+	node.Status.Capacity[k8sclient.LvCapacity] = nodeCap
 	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
 	if err != nil{
 		return errors.New("Cannot update node(" + pvHandler.nodeName + "), because: " + err.Error())
@@ -135,7 +135,7 @@ func createLVCapacityResource(nodeName string, lvCapacity int64, kubeClient kube
 		return errors.New("Cannot get node(" + nodeName + "), because: " + err.Error())
 	}
 	lvCapQuantity := resource.NewQuantity(lvCapacity, resource.BinarySI)
-	node.Status.Capacity["lv-capacity"] = *lvCapQuantity
+	node.Status.Capacity[k8sclient.LvCapacity] = *lvCapQuantity
 	err = k8sclient.UpdateNodeStatus(nodeName, kubeClient, node)
 	if err != nil{
 		return errors.New("Cannot update node(" + nodeName + "), because: " + err.Error())

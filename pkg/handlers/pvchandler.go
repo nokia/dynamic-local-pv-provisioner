@@ -26,8 +26,9 @@ const (
 )
 
 type PvcHandler struct {
+	nodeName    string
 	storagePath string
-	k8sClient 	kubernetes.Interface
+	k8sClient   kubernetes.Interface
 }
 
 func NewPvcHandler(storagePath string, cfg *rest.Config) (*PvcHandler, error) {
@@ -36,8 +37,9 @@ func NewPvcHandler(storagePath string, cfg *rest.Config) (*PvcHandler, error) {
 		return nil, err
 	}
 	pvcHandler := PvcHandler{
+		nodeName:    os.Getenv("NODE_NAME"),
 		storagePath: storagePath,
-		k8sClient: kubeClient,
+		k8sClient:   kubeClient,
 	}
 	return &pvcHandler, nil
 }
@@ -57,7 +59,7 @@ func (pvcHandler *PvcHandler) CreateController() cache.Controller {
 
 func (pvcHandler *PvcHandler) pvcAdded(pvc v1.PersistentVolumeClaim) {
 	log.Printf("DEBUG: PVC Added: %+v\n", pvc)
-	handlePvc, pvDirPath := shouldPvcBeHandled(pvc, pvcHandler.storagePath)
+	handlePvc, pvDirPath := shouldPvcBeHandled(pvc, pvcHandler.nodeName, pvcHandler.storagePath)
 	if !handlePvc {
 		log.Println("DEBUG: pvcAdded - Not my job...")
 		return
@@ -70,7 +72,7 @@ func (pvcHandler *PvcHandler) pvcAdded(pvc v1.PersistentVolumeClaim) {
 
 func (pvcHandler *PvcHandler) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim) {
 	log.Printf("PVC changed: %+v\n", newPvc)
-	handlePvc, pvDirPath := shouldPvcBeHandled(newPvc, pvcHandler.storagePath)
+	handlePvc, pvDirPath := shouldPvcBeHandled(newPvc, pvcHandler.nodeName, pvcHandler.storagePath)
 	if !handlePvc {
 		log.Println("DEBUG: pvcChanged - Not my job...")
 		return
@@ -83,12 +85,12 @@ func (pvcHandler *PvcHandler) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc
 }
 
 func (pvcHandler *PvcHandler) enoughLvCapacity(pvc v1.PersistentVolumeClaim) bool {
-	node, err := k8sclient.GetNode(os.Getenv("NODE_NAME"), pvcHandler.k8sClient)
+	node, err := k8sclient.GetNode(pvcHandler.nodeName, pvcHandler.k8sClient)
 	if err != nil {
-		log.Println("ERROR: Cannot get node: " + os.Getenv("NODE_NAME") + ", because: " + err.Error())
+		log.Println("ERROR: Cannot get node: " + pvcHandler.nodeName + ", because: " + err.Error())
 		return false
 	}
-	nodeCapacity := node.Status.Capacity["lv-capacity"]
+	nodeCapacity := node.Status.Capacity[k8sclient.LvCapacity]
 	if (&nodeCapacity).Cmp(pvc.Spec.Resources.Requests["storage"]) < 0 {
 		log.Println("ERROR: Not enough free space in storage!")
 		return false
@@ -96,16 +98,16 @@ func (pvcHandler *PvcHandler) enoughLvCapacity(pvc v1.PersistentVolumeClaim) boo
 	return true
 }
 
-func shouldPvcBeHandled(pvc v1.PersistentVolumeClaim, storagePath string) (bool, string) {
+func shouldPvcBeHandled(pvc v1.PersistentVolumeClaim, nodeName string, storagePath string) (bool, string) {
 	if pvc.Status.Phase == v1.ClaimPending {
-		if nodeName, ok := pvc.ObjectMeta.Annotations["nodename"]; ok && (nodeName == os.Getenv("NODE_NAME")) {
+		if pvcNodeName, ok := pvc.ObjectMeta.Annotations[k8sclient.NodeName]; ok && (pvcNodeName == nodeName) {
 			pvDir := storagePath + "/" + pvc.ObjectMeta.Namespace + "_" + pvc.ObjectMeta.Name
 			if _, err := os.Stat(pvDir); os.IsNotExist(err) {
 				return true, pvDir
 			}
 			log.Println("DEBUG: " + pvDir + " already exists!")
 		} else {
-			log.Printf("DEBUG: Nodename: %t, %s, env: %s\n", ok, nodeName, os.Getenv("NODE_NAME"))
+			log.Printf("DEBUG: Nodename: %t, %s, env: %s\n", ok, pvcNodeName, nodeName)
 		}
 	}
 	return false, ""
