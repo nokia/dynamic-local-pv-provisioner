@@ -12,8 +12,12 @@ import (
 func GetNodeByLabel(label string, kubeClient kubernetes.Interface) (v1.Node, error) {
 	var returnNode v1.Node
 	var maxCapacity int64 = 0
+	var listOption metav1.ListOptions
 
-	nodeList, err := kubeClient.CoreV1().Nodes().List(metav1.ListOptions{LabelSelector: label})
+	if label != "" {
+		listOption = metav1.ListOptions{LabelSelector: label}
+	}
+	nodeList, err := kubeClient.CoreV1().Nodes().List(listOption)
 	log.Printf("DEBUG: result node list: %+v\n", nodeList)
 	if err != nil {
 		return v1.Node{}, err
@@ -59,9 +63,10 @@ func UpdateNodeStatus(nodeName string, kubeClient kubernetes.Interface, node *v1
 	// 	return errors.New("ERROR: Cannot get lv-capacity on node because: " + err.Error())
 	// }
 	// node.Status.Capacity["lv-capacity"] = lvCapQuantity
-	_, err := kubeClient.CoreV1().Nodes().UpdateStatus(node)
+	updatenode, err := kubeClient.CoreV1().Nodes().UpdateStatus(node)
 	if err != nil {
 		return errors.New("ERROR: Cannot update node staus of node (" + nodeName + ") because: " + err.Error())
 	}
+	log.Printf("DEBUG: UpdateNodeStatus: %+v\n", updatenode)
 	return nil
 }
