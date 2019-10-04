@@ -10,6 +10,8 @@ import (
 	"time"
 	"reflect"
 	"path/filepath"
+	"io/ioutil"
+	"github.com/nokia/dynamic-local-pv-provisioner/pkg/k8sclient"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -60,6 +62,9 @@ func (pvcHandler *PvcHandler) pvcAdded(pvc v1.PersistentVolumeClaim) {
 		log.Println("DEBUG: pvcAdded - Not my job...")
 		return
 	}
+	if !pvcHandler.enoughLvCapacity(pvc) {
+		return
+	}
 	pvcHandler.createPVStorage(pvc, pvDirPath)
 }
 
@@ -70,7 +75,25 @@ func (pvcHandler *PvcHandler) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc
 		log.Println("DEBUG: pvcChanged - Not my job...")
 		return
 	}
+	if !pvcHandler.enoughLvCapacity(newPvc) {
+		log.Println("ERROR: Not enough storage!")
+		return
+	}
 	pvcHandler.createPVStorage(newPvc, pvDirPath)
+}
+
+func (pvcHandler *PvcHandler) enoughLvCapacity(pvc v1.PersistentVolumeClaim) bool {
+	node, err := k8sclient.GetNode(os.Getenv("NODE_NAME"), pvcHandler.k8sClient)
+	if err != nil {
+		log.Println("ERROR: Not enough free space in storage!")
+		return false
+	}
+	nodeCapacity := node.Status.Capacity["lv-capacity"]
+	if (&nodeCapacity).Cmp(pvc.Spec.Resources.Requests["storage"]) < 0 {
+		log.Println("ERROR: Not enough free space in storage!")
+		return false
+	}
+	return true
 }
 
 func shouldPvcBeHandled(pvc v1.PersistentVolumeClaim, storagePath string) (bool, string) {
@@ -89,7 +112,7 @@ func shouldPvcBeHandled(pvc v1.PersistentVolumeClaim, storagePath string) (bool,
 }
 
 func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDirPath string) {
-	var projectLines []string
+	var projID int = 1
 
 	log.Println("DEBUG: Starting createPVStorage executor...")
 	pvcStorageReq, ok := pvc.Spec.Resources.Requests["storage"]
@@ -102,27 +125,21 @@ func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDi
 	storageRequest := strconv.FormatInt((&pvcStorageReq).Value(), 10)
 	log.Println("DEBUG: storageRequest: " + storageRequest)
 
-	command := exec.Command("xfs_quota", "-x", "-c", "report", pvcHandler.storagePath)
-	output, err := command.Output()
+	projectsContent, err := ioutil.ReadFile("/etc/projects")
 	if err != nil {
-		log.Println("ERROR: Cannot get XFS quota reports, because: " + err.Error())
+		log.Println("ERROR: Cannot read /etc/projects file: " + err.Error())
 		return
 	}
-
-	lines := strings.Split(string(output),"\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line,"#") {
-			projectLines = append(projectLines, line)
+	if string(projectsContent) != "" {
+		lines := strings.Split(string(projectsContent),"\n")
+		projid, err := strconv.Atoi(strings.Split(lines[len(lines)-2], ":")[0])
+		if err != nil{
+			log.Println("ERROR: Cannot convert project id from " + lines[len(lines)-2] + " because: " + err.Error())
+			return
 		}
-	}
-	lastline := string(projectLines[len(projectLines)-1])
-	projID, err := strconv.Atoi(strings.TrimPrefix(strings.Split(lastline, " ")[0], "#"))
-	if err != nil{
-		log.Println("ERROR: Cannot convert project id from " + lastline + " because: " + err.Error())
-		return
+		projID = projid + 1
 	}
 	// create directory with new projID
-	projID = projID + 1
 	err = os.Mkdir(pvDirPath, os.ModePerm)
 	if err != nil {
 		log.Println("ERROR: Cannot create directory on host, because: " + err.Error())
@@ -156,8 +173,8 @@ func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDi
 	}
 	// set xfs_quota limit
 	subcommand := fmt.Sprintf("project -s %s", projName)
-	command = exec.Command("xfs_quota", "-x", "-c", subcommand, pvcHandler.storagePath)
-	output, err = command.CombinedOutput()
+	command := exec.Command("xfs_quota", "-x", "-c", subcommand, pvcHandler.storagePath)
+	output, err := command.CombinedOutput()
 	if err != nil {
 		log.Println("ERROR: Cannot set xfs_quota project, because: " + err.Error())
 		return

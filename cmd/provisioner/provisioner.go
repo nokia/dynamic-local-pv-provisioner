@@ -94,11 +94,6 @@ func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
 		log.Println("ERROR: Cannot query node by label, because: " + err.Error())
 		return
 	}
-	nodeCapacity := node.Status.Capacity["lv-capacity"]
-	if (&nodeCapacity).Cmp(pvc.Spec.Resources.Requests["storage"]) < 0 {
-		log.Println("ERROR: Not enough free space in storage!")
-		return
-	}
 	pvc.ObjectMeta.Annotations["nodename"] = node.ObjectMeta.Name
 	// test if could be updated
 	pvc.ObjectMeta.ResourceVersion = ""
