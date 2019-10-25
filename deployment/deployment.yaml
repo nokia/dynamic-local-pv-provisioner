@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamic-local-pv-provisioner
+  namespace: kube-system
+spec:
+  template:
+    metadata:
+      labels:
+        app: pv-test
+    spec:
+      containers:
+      - name: pv-test
+        image: pv-test:1.0-0
+        imagePullPolicy: IfNotPresent
+        command: [ "/executor", "--storagepath=/mnt/sig_storage" ]
+        volumeMounts:
+        - name: sig-storage-mount
+          mountPath: /mnt/sig_storage
+          mountPropagation: Bidirectional
+        - name: fstab
+          mountPath: /rootfs/fstab
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          privileged: true
+          capabilities:
+              add:
+                - SYS_ADMIN
+      volumes:
+      - name: sig-storage-mount
+        hostPath:
+          path: /mnt/caas_app
+      - name: fstab
+        hostPath:
+          path: /etc/fstab
+      nodeSelector:
+        nodename: caas_master1
+      serviceAccountName: dynamic-pv
