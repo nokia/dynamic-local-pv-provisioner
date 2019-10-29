@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/rest"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 type PvHandler struct {
@@ -39,8 +40,8 @@ func NewPvHandler(storagePath string, cfg *rest.Config) (*PvHandler, error) {
 	if err != nil{
 		return nil, err
 	}
-	log.Println("DEBUG: lvmCap determined")
-	err = k8sclient.UpdateNodeLVCapacity(nodename, lvCap, kubeClient)
+	log.Printf("DEBUG: lvmCap determined, lvcap: %d", lvCap)
+	err = createLVCapacityResource(nodename, lvCap, kubeClient)
 	log.Println("DEBUG: after patch")
 	return &pvHandler, err
 }
@@ -58,38 +59,66 @@ func (pvHandler *PvHandler) CreateController() cache.Controller {
 
 func (pvHandler *PvHandler) pvAdded(pv v1.PersistentVolume) {
 	log.Printf("PV Added: %+v\n", pv)
-	pvCapacity, ok := pv.Spec.Capacity["storage"]
-	if !ok {
-		log.Println("ERROR: pvAdded : no Capacity in PV")
-	}
-	lvmCap, err := lvmAvailableCapacity(pvHandler.storagePath)
+	err := pvHandler.decreaseStorageCap(pv)
 	if err != nil{
-		log.Println("ERROR: pvAdded - " + err.Error())
+		log.Println("ERROR: PV Added failed: " + err.Error())
 		return
 	}
-	calculatedCap := lvmCap - (&pvCapacity).Value()
-	err = k8sclient.UpdateNodeLVCapacity(pvHandler.nodeName, calculatedCap, pvHandler.k8sClient)
-	if err != nil{
-		log.Println("ERROR: pvAdded - " + err.Error())
-	}
+	log.Println("DEBUG: PV Added successfull ")
 }
 
 func (pvHandler *PvHandler) pvDeleted(pv v1.PersistentVolume) {
-	log.Printf("PV Deleted: %+v\n", pv)
-	pvCapacity, ok := pv.Spec.Capacity["storage"]
-	if !ok {
-		log.Println("ERROR: pvDelete - no Capacity in PV")
-	}
-	lvmCap, err := lvmAvailableCapacity(pvHandler.storagePath)
+	log.Printf("DEBUG: PV Deleted: %+v\n", pv)
+	err := pvHandler.increaseStorageCap(pv)
 	if err != nil{
-		log.Println("ERROR: pvDelete - " + err.Error())
+		log.Println("ERROR: PV Delete failed: " + err.Error())
 		return
 	}
-	calculatedCap := lvmCap + (&pvCapacity).Value()
-	err = k8sclient.UpdateNodeLVCapacity(pvHandler.nodeName, calculatedCap, pvHandler.k8sClient)
+	log.Println("DEBUG: PV Delete successfull")
+}
+
+func (pvHandler *PvHandler) increaseStorageCap(pv v1.PersistentVolume) error{
+	pvCapacity := pv.Spec.Capacity["storage"]
+	node, err := k8sclient.GetNode(pvHandler.nodeName, pvHandler.k8sClient)
 	if err != nil{
-		log.Println("ERROR: pvDelete - " + err.Error())
+		return err
 	}
+	nodeCap := node.Status.Capacity["lv-capacity"]
+	(&nodeCap).Add(pvCapacity)
+	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
+	if err != nil{
+		return err
+	}
+	return nil
+}
+
+func (pvHandler *PvHandler) decreaseStorageCap(pv v1.PersistentVolume) error{
+	pvCapacity := pv.Spec.Capacity["storage"]
+	node, err := k8sclient.GetNode(pvHandler.nodeName, pvHandler.k8sClient)
+	if err != nil{
+		return err
+	}
+	nodeCap := node.Status.Capacity["lv-capacity"]
+	(&nodeCap).Sub(pvCapacity)
+	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
+	if err != nil{
+		return err
+	}
+	return nil
+}
+
+func createLVCapacityResource(nodeName string, lvCapacity int64, kubeClient kubernetes.Interface) error {
+	node, err := k8sclient.GetNode(nodeName, kubeClient)
+	if err != nil{
+		return err
+	}
+	lvCapQuantity := resource.NewQuantity(lvCapacity, resource.DecimalSI)
+	node.Status.Capacity["lv-capacity"] = *lvCapQuantity
+	err = k8sclient.UpdateNodeStatus(nodeName, kubeClient, node)
+	if err != nil{
+		return err
+	}
+	return nil
 }
 
 func lvmAvailableCapacity (lvPath string) (int64, error) {
@@ -98,5 +127,6 @@ func lvmAvailableCapacity (lvPath string) (int64, error) {
 	if err != nil {
 		return 0, errors.New("ERROR: Cannot get FS info from: " + lvPath + " because: " + err.Error())
 	}
+	log.Printf("DEBUG: Availabe blocks: %d , int64: %d , Block size: %d",fs.Bavail, int64(fs.Bavail), fs.Bsize)
 	return int64(fs.Bavail) * fs.Bsize, nil
 }
