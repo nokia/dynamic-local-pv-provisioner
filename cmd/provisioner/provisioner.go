@@ -67,36 +67,45 @@ func main() {
 
 func (provisioner *Provisoner) pvcAdded(pvc v1.PersistentVolumeClaim) {
 	log.Printf("DEBUG: PROVISIONER PVC Added: %+v\n", pvc)
-	selector, selectorOk := pvc.ObjectMeta.Annotations["nodeselector"]
 	_, nodeNameOk := pvc.ObjectMeta.Annotations["nodename"]
-	if selectorOk && !nodeNameOk && (pvc.Status.Phase != v1.ClaimBound) {
-		log.Println("DEBUG: Selector: " + selector)
-		node, err := k8sclient.GetNodeByLabel(selector, provisioner.k8sClient)
-		log.Printf("DEBUG: Choosen node: %+v\n", node)
-		if err != nil {
-			log.Println("ERROR: Cannot query node by label, because: " + err.Error())
-			return
-		}
-		nodeCapacity := node.Status.Capacity["lv-capacity"]
-		if (&nodeCapacity).Cmp(pvc.Spec.Resources.Requests["storage"]) < 0 {
-			log.Println("ERROR: Not enough free space in storage!")
-			return
-		}
-		pvc.ObjectMeta.Annotations["nodename"] = node.ObjectMeta.Name
-		// test if could be updated
-		pvc.ObjectMeta.ResourceVersion = ""
-		log.Printf("DEBUG: Pvc before update: %+v\n", pvc)
-		err = k8sclient.UpdatePvc(pvc, provisioner.k8sClient)
-		if err != nil {
-			log.Println("ERROR: Cannot update PVC, because: " + err.Error())
-		}
+	if !nodeNameOk && (pvc.Status.Phase != v1.ClaimBound) {
+		provisioner.handlePvc(pvc)
 	} else {
 		log.Println("DEBUG: PROVISIONER pvcAdded - Not my job...")
 	}
 }
 
 func (provisioner *Provisoner) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim) {
-	// needed???
+	log.Printf("DEBUG: PROVISIONER PVC Added: %+v\n", newPvc)
+	_, nodeNameOk := newPvc.ObjectMeta.Annotations["nodename"]
+	if !nodeNameOk && (newPvc.Status.Phase != v1.ClaimBound) {
+		provisioner.handlePvc(newPvc)
+	} else {
+		log.Println("DEBUG: PROVISIONER pvcAdded - Not my job...")
+	}
+}
+
+func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
+	selector, _ := pvc.ObjectMeta.Annotations["nodeselector"]
+	log.Println("DEBUG: Selector: " + selector)
+	node, err := k8sclient.GetNodeByLabel(selector, provisioner.k8sClient)
+	log.Printf("DEBUG: Choosen node: %+v\n", node)
+	if err != nil {
+		log.Println("ERROR: Cannot query node by label, because: " + err.Error())
+		return
+	}
+	nodeCapacity := node.Status.Capacity["lv-capacity"]
+	if (&nodeCapacity).Cmp(pvc.Spec.Resources.Requests["storage"]) < 0 {
+		log.Println("ERROR: Not enough free space in storage!")
+		return
+	}
+	pvc.ObjectMeta.Annotations["nodename"] = node.ObjectMeta.Name
+	// test if could be updated
+	pvc.ObjectMeta.ResourceVersion = ""
+	err = k8sclient.UpdatePvc(pvc, provisioner.k8sClient)
+	if err != nil {
+		log.Println("ERROR: Cannot update PVC, because: " + err.Error())
+	}
 }
 
 func init() {
