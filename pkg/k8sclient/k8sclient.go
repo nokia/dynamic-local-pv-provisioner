@@ -58,11 +58,6 @@ func GetNode(nodeName string, kubeClient kubernetes.Interface) (*v1.Node, error)
 }
 
 func UpdateNodeStatus(nodeName string, kubeClient kubernetes.Interface, node *v1.Node) error {
-	// node, err := kubeClient.CoreV1().Nodes().Get(nodeName, metav1.GetOptions{})
- 	// if err != nil {
-	// 	return errors.New("ERROR: Cannot get lv-capacity on node because: " + err.Error())
-	// }
-	// node.Status.Capacity["lv-capacity"] = lvCapQuantity
 	updatenode, err := kubeClient.CoreV1().Nodes().UpdateStatus(node)
 	if err != nil {
 		return errors.New("ERROR: Cannot update node staus of node (" + nodeName + ") because: " + err.Error())
