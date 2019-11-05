@@ -85,6 +85,7 @@ func (pvHandler *PvHandler) increaseStorageCap(pv v1.PersistentVolume) error{
 	}
 	nodeCap := node.Status.Capacity["lv-capacity"]
 	(&nodeCap).Add(pvCapacity)
+	node.Status.Capacity["lv-capacity"] = nodeCap
 	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
 	if err != nil{
 		return err
@@ -98,8 +99,10 @@ func (pvHandler *PvHandler) decreaseStorageCap(pv v1.PersistentVolume) error{
 	if err != nil{
 		return err
 	}
+	log.Printf("DEBUG: dec pv-capacity: %+v\n", pvCapacity)
 	nodeCap := node.Status.Capacity["lv-capacity"]
 	(&nodeCap).Sub(pvCapacity)
+	node.Status.Capacity["lv-capacity"] = nodeCap
 	err = k8sclient.UpdateNodeStatus(pvHandler.nodeName, pvHandler.k8sClient, node)
 	if err != nil{
 		return err
@@ -112,7 +115,7 @@ func createLVCapacityResource(nodeName string, lvCapacity int64, kubeClient kube
 	if err != nil{
 		return err
 	}
-	lvCapQuantity := resource.NewQuantity(lvCapacity, resource.DecimalSI)
+	lvCapQuantity := resource.NewQuantity(lvCapacity, resource.BinarySI)
 	node.Status.Capacity["lv-capacity"] = *lvCapQuantity
 	err = k8sclient.UpdateNodeStatus(nodeName, kubeClient, node)
 	if err != nil{

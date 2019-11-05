@@ -1,14 +1,15 @@
 package handlers
 
 import (
-	"os/exec"
 	"os"
+	"os/exec"
 	"log"
 	"strings"
 	"strconv"
 	"fmt"
 	"time"
 	"reflect"
+	"path/filepath"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -55,7 +56,7 @@ func (pvcHandler *PvcHandler) CreateController() cache.Controller {
 func (pvcHandler *PvcHandler) pvcAdded(pvc v1.PersistentVolumeClaim) {
 	log.Printf("DEBUG: PVC Added: %+v\n", pvc)
 	handlePvc, pvDirPath := shouldPvcBeHandled(pvc, pvcHandler.storagePath)
-	if ! handlePvc {
+	if !handlePvc {
 		log.Println("DEBUG: pvcAdded - Not my job...")
 		return
 	}
@@ -80,41 +81,42 @@ func shouldPvcBeHandled(pvc v1.PersistentVolumeClaim, storagePath string) (bool,
 				return true, pvDir
 			}
 			log.Println("DEBUG: " + pvDir + " already exists!")
+		} else {
+			log.Printf("DEBUG: Nodename: %t, %s, env: %s\n", ok, nodeName, os.Getenv("NODE_NAME"))
 		}
 	}
 	return false, ""
 }
 
-func runOSCommand(command string) (string, error) {
-	log.Println("DEBUG: " + command)
-	out, err := exec.Command("sh", "-c", command).Output()
-	if err != nil {
-		return "", err
-	}
-	output := string(out[:])
-	log.Println("DEBUG: output: " + output)
-	return output, nil
-}
-
 func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDirPath string) {
+	var projectLines []string
+
 	log.Println("DEBUG: Starting createPVStorage executor...")
 	pvcStorageReq, ok := pvc.Spec.Resources.Requests["storage"]
 	if !ok {
 		log.Println("ERROR: Storage request is empty!")
 		return
 	}
+	log.Printf("DEBUG: storage resource = %v\n", pvcStorageReq)
+	log.Printf("DEBUG: storage resource value = %v\n", (&pvcStorageReq).Value())
 	storageRequest := strconv.FormatInt((&pvcStorageReq).Value(), 10)
-	// get xfs_quota last proj_id
-	command := "xfs_quota -x -c report " + pvcHandler.storagePath + " | grep '#'"
-	log.Println(command)
-	output, err := runOSCommand(command)
+	log.Println("DEBUG: storageRequest: " + storageRequest)
+
+	command := exec.Command("xfs_quota", "-x", "-c", "report", pvcHandler.storagePath)
+	output, err := command.Output()
 	if err != nil {
 		log.Println("ERROR: Cannot get XFS quota reports, because: " + err.Error())
 		return
 	}
-	lines := strings.Split(output,"\n")
-	lastline := lines[len(lines)-2]
-	projID, err := strconv.Atoi(strings.TrimPrefix(strings.Split(lastline," ")[0],"#"))
+
+	lines := strings.Split(string(output),"\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line,"#") {
+			projectLines = append(projectLines, line)
+		}
+	}
+	lastline := string(projectLines[len(projectLines)-1])
+	projID, err := strconv.Atoi(strings.TrimPrefix(strings.Split(lastline, " ")[0], "#"))
 	if err != nil{
 		log.Println("ERROR: Cannot convert project id from " + lastline + " because: " + err.Error())
 		return
@@ -126,21 +128,52 @@ func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDi
 		log.Println("ERROR: Cannot create directory on host, because: " + err.Error())
 		return
 	}
+
+	projFile, err := os.OpenFile("/etc/projects", os.O_APPEND|os.O_WRONLY|os.O_SYNC, 0755)
+	if err != nil {
+		log.Println("ERROR: Cannot open /etc/projects file, because: " + err.Error())
+		return
+	}
+	defer projFile.Close()
+	project := fmt.Sprintf("%d:%s\n", projID, pvDirPath)
+	_,err = projFile.WriteString(project)
+	if err != nil {
+		log.Println("ERROR: Cannot modify /etc/projects file, because: " + err.Error())
+		return
+	}
+	projIdFile, err := os.OpenFile("/etc/projid", os.O_APPEND|os.O_WRONLY|os.O_SYNC, 0755)
+	if err != nil {
+		log.Println("ERROR: Cannot open /etc/projid file, because: " + err.Error())
+		return
+	}
+	defer projIdFile.Close()
+	projName := filepath.Base(pvDirPath)
+	projid := fmt.Sprintf("%s:%d\n", projName, projID)
+	_,err = projIdFile.WriteString(projid)
+	if err != nil {
+		log.Println("ERROR: Cannot modify /etc/projid file, because: " + err.Error())
+		return
+	}
 	// set xfs_quota limit
-	command = fmt.Sprintf("xfs_quota -x -c 'project -s -p %s %d' %s", pvDirPath, projID, pvcHandler.storagePath)
-	_, err = runOSCommand(command)
+	subcommand := fmt.Sprintf("project -s %s", projName)
+	command = exec.Command("xfs_quota", "-x", "-c", subcommand, pvcHandler.storagePath)
+	output, err = command.CombinedOutput()
 	if err != nil {
 		log.Println("ERROR: Cannot set xfs_quota project, because: " + err.Error())
 		return
 	}
-	command = fmt.Sprintf("xfs_quota -x -c 'limit -p bhard=%s %d' %s", storageRequest, projID, pvcHandler.storagePath)
-	log.Println(command)
-	_, err = runOSCommand(command)
+	log.Printf("DEBUG: command: %+v\n", command)
+	log.Println("DEBUG: output: " + string(output))
+
+	subcommand = fmt.Sprintf("limit -p bhard=%s %s", storageRequest, projName)
+	command = exec.Command("xfs_quota", "-x", "-c", subcommand, pvcHandler.storagePath)
+	output, err = command.CombinedOutput()
 	if err != nil {
 		log.Println("ERROR: Cannot set xfs_quota limit, because: " + err.Error())
 		return
 	}
-
+	log.Printf("DEBUG: command: %+v\n", command)
+	log.Println("DEBUG: output: " + string(output))
 	log.Println("DEBUG: Bind Mount... ")
 	// Bind mounting
 	err = syscall.Mount(pvDirPath, pvDirPath, "none", syscall.MS_BIND, "")
@@ -155,7 +188,7 @@ func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDi
 		return
 	}
 	defer file.Close()
-	bindMountCommand := fmt.Sprintf("%[1]s %[1]s none bind 0 0", pvDirPath)
+	bindMountCommand := fmt.Sprintf("%[1]s %[1]s none bind 0 0\n", pvDirPath)
 	_,err = file.WriteString(bindMountCommand)
 	if err != nil {
 		log.Println("ERROR: Cannot modify fstab file: " + fstabPath + " because: " + err.Error()+ "\nCannot save mountpoint!")
