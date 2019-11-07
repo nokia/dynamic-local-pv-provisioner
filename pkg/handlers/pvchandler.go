@@ -85,7 +85,7 @@ func (pvcHandler *PvcHandler) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc
 func (pvcHandler *PvcHandler) enoughLvCapacity(pvc v1.PersistentVolumeClaim) bool {
 	node, err := k8sclient.GetNode(os.Getenv("NODE_NAME"), pvcHandler.k8sClient)
 	if err != nil {
-		log.Println("ERROR: Not enough free space in storage!")
+		log.Println("ERROR: Cannot get node: " + os.Getenv("NODE_NAME") + ", because: " + err.Error())
 		return false
 	}
 	nodeCapacity := node.Status.Capacity["lv-capacity"]
