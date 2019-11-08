@@ -9,14 +9,20 @@ import (
 	"k8s.io/api/core/v1"
 )
 
+const (
+	NodeSelector = "nokia.k8s.io/nodeselector"
+	NodeName = "nokia.k8s.io/nodename"
+	LvCapacity = "nokia.k8s.io/lv-capacity"
+)
+
 func GetNodeByLabel(label string, kubeClient kubernetes.Interface) (v1.Node, error) {
 	var returnNode v1.Node
 	var maxCapacity int64 = 0
 	var listOption metav1.ListOptions
 
-	if label != "" {
-		listOption = metav1.ListOptions{LabelSelector: label}
-	}
+	// if label != "" {
+	listOption = metav1.ListOptions{LabelSelector: label}
+	// }
 	nodeList, err := kubeClient.CoreV1().Nodes().List(listOption)
 	log.Printf("DEBUG: result node list: %+v\n", nodeList)
 	if err != nil {
@@ -29,7 +35,7 @@ func GetNodeByLabel(label string, kubeClient kubernetes.Interface) (v1.Node, err
 		return nodeList.Items[0], nil
 	default:
 		for _, node := range nodeList.Items {
-			nodeCapacity, ok := node.Status.Capacity["lv-capacity"]
+			nodeCapacity, ok := node.Status.Capacity[LvCapacity]
 			if !ok {
 				return returnNode, errors.New("No lv-capacity set, yet!")
 			}
