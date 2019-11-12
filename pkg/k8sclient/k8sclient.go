@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	NodeSelector = "nokia.k8s.io/nodeselector"
-	NodeName = "nokia.k8s.io/nodename"
+	NodeSelector = "nokia.k8s.io/nodeSelector"
+	NodeName = "nokia.k8s.io/nodeName"
 	LvCapacity = "nokia.k8s.io/lv-capacity"
 )
 
