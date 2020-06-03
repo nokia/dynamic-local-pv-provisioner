@@ -9,7 +9,6 @@ import (
 	"strings"
 	syscall "golang.org/x/sys/unix"
 	"github.com/nokia/dynamic-local-pv-provisioner/pkg/k8sclient"
-
 	"k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -64,7 +63,7 @@ func (pvHandler *PvHandler) pvAdded(pv v1.PersistentVolume) {
 	}
 	err := pvHandler.decreaseStorageCap(pv)
 	if err != nil{
-		log.Println("ERROR: PV Added failed: " + err.Error())
+		log.Println("PvHandler ERROR: PV Added failed: " + err.Error())
 		return
 	}
 }
@@ -73,15 +72,26 @@ func (pvHandler *PvHandler) pvDeleted(pv v1.PersistentVolume) {
 	if !pvHandler.handlePv(pv) {
 		return
 	}
-	err := pvHandler.increaseStorageCap(pv)
+	if pv.Spec.PersistentVolumeReclaimPolicy != v1.PersistentVolumeReclaimDelete{
+		return
+	}
+	localVolumePath := pv.Spec.Local.Path
+	// delete directory
+	err := os.RemoveAll(localVolumePath)
+	if err != nil {
+		log.Println("PvHandler ERROR: Cannot delete " + localVolumePath + " , because: " + err.Error())
+	}
+
+	err = pvHandler.increaseStorageCap(pv)
 	if err != nil{
-		log.Println("ERROR: PV Delete failed: " + err.Error())
+		log.Println("PvHandler ERROR: PV Delete failed: " + err.Error())
 		return
 	}
 }
 
 func (pvHandler *PvHandler) handlePv(pv v1.PersistentVolume) bool {
-	if strings.Contains(pv.ObjectMeta.Annotations[localVolumeAnnotation], "local-volume-provisioner") {
+	pvIsLocal, err := k8sclient.StorageClassIsNokiaLocal(pv.Spec.StorageClassName, pvHandler.k8sClient)
+	if err == nil && pvIsLocal {
 		nodeSelector := pv.Spec.NodeAffinity.Required.String()
 		if strings.Contains(nodeSelector, pvHandler.nodeName) {
 			return true
