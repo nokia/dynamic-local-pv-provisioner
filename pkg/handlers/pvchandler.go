@@ -1,23 +1,22 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
-	"errors"
 	"time"
 
 	"github.com/nokia/dynamic-local-pv-provisioner/pkg/k8sclient"
 
 	syscall "golang.org/x/sys/unix"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -25,7 +24,8 @@ import (
 )
 
 const (
-	fstabPath = "/rootfs/fstab"
+	fstabPath           = "/rootfs/fstab"
+	pvDirNameAnnotation = "nokia.k8s.io/pvDirName"
 )
 
 type PvcHandler struct {
@@ -54,7 +54,9 @@ func (pvcHandler *PvcHandler) CreateController() cache.Controller {
 		AddFunc: func(obj interface{}) {
 			pvcHandler.pvcAdded(*(reflect.ValueOf(obj).Interface().(*v1.PersistentVolumeClaim)))
 		},
-		DeleteFunc: func(obj interface{}) {pvcHandler.pvcDeleted(*(reflect.ValueOf(obj).Interface().(*v1.PersistentVolumeClaim)))},
+		DeleteFunc: func(obj interface{}) {
+			pvcHandler.pvcDeleted(*(reflect.ValueOf(obj).Interface().(*v1.PersistentVolumeClaim)))
+		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			pvcHandler.pvcChanged(*(reflect.ValueOf(oldObj).Interface().(*v1.PersistentVolumeClaim)), *(reflect.ValueOf(newObj).Interface().(*v1.PersistentVolumeClaim)))
 		},
@@ -63,7 +65,7 @@ func (pvcHandler *PvcHandler) CreateController() cache.Controller {
 }
 
 func (pvcHandler *PvcHandler) pvcAdded(pvc v1.PersistentVolumeClaim) {
-	handlePvc, pvDirPath := shouldPvcBeHandled(v1.PersistentVolumeClaim{}, pvc, pvcHandler.nodeName, pvcHandler.storagePath, pvcHandler.k8sClient)
+	handlePvc, pvDirPath := shouldPvcBeHandled(v1.PersistentVolumeClaim{}, pvc, pvcHandler.nodeName, pvcHandler.storagePath)
 	if !handlePvc || !pvcHandler.enoughLvCapacity(pvc) {
 		return
 	}
@@ -71,7 +73,7 @@ func (pvcHandler *PvcHandler) pvcAdded(pvc v1.PersistentVolumeClaim) {
 }
 
 func (pvcHandler *PvcHandler) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim) {
-	handlePvc, pvDirPath := shouldPvcBeHandled(oldPvc, newPvc, pvcHandler.nodeName, pvcHandler.storagePath, pvcHandler.k8sClient)
+	handlePvc, pvDirPath := shouldPvcBeHandled(oldPvc, newPvc, pvcHandler.nodeName, pvcHandler.storagePath)
 	if !handlePvc || !pvcHandler.enoughLvCapacity(newPvc) {
 		return
 	}
@@ -79,10 +81,10 @@ func (pvcHandler *PvcHandler) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc
 }
 
 func (pvcHandler *PvcHandler) pvcDeleted(pvc v1.PersistentVolumeClaim) {
-	if handlePvc := shouldDeletePvcBeHandled(pvc, pvcHandler.nodeName, pvcHandler.k8sClient); handlePvc {
-		pv, err := k8sclient.GetVolume(pvc.Spec.VolumeName, pvcHandler.k8sClient)
+	if handlePvc := shouldDeletePvcBeHandled(pvc, pvcHandler.nodeName); handlePvc {
+		pv, err := k8sclient.GetVolume(pvc.Spec.VolumeName)
 		if err != nil {
-			log.Println("PvcHandler ERROR: Cannot get pv "+ pvc.Spec.VolumeName +", because: " + err.Error())
+			log.Println("PvcHandler ERROR: Cannot get pv " + pvc.Spec.VolumeName + ", because: " + err.Error())
 			return
 		}
 		deletePVStorage(*pv, pvcHandler.storagePath)
@@ -90,7 +92,7 @@ func (pvcHandler *PvcHandler) pvcDeleted(pvc v1.PersistentVolumeClaim) {
 }
 
 func (pvcHandler *PvcHandler) enoughLvCapacity(pvc v1.PersistentVolumeClaim) bool {
-	node, err := k8sclient.GetNode(pvcHandler.nodeName, pvcHandler.k8sClient)
+	node, err := k8sclient.GetNode(pvcHandler.nodeName)
 	if err != nil {
 		log.Println("PvcHandler ERROR: Cannot get node: " + pvcHandler.nodeName + ", because: " + err.Error())
 		return false
@@ -103,14 +105,16 @@ func (pvcHandler *PvcHandler) enoughLvCapacity(pvc v1.PersistentVolumeClaim) boo
 	return true
 }
 
-func shouldPvcBeHandled(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim, nodeName string, storagePath string, kubeClient kubernetes.Interface) (bool, string) {
-	pvcIsLocal, _ := k8sclient.StorageClassIsNokiaLocal(*(newPvc.Spec.StorageClassName), kubeClient)
+func shouldPvcBeHandled(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim, nodeName string, storagePath string) (bool, string) {
+	pvcIsLocal, _ := k8sclient.StorageClassIsNokiaLocal(*(newPvc.Spec.StorageClassName))
 	if pvcIsLocal && isChangeEnoughToProceed(oldPvc, newPvc) {
 		if pvcNodeName, ok := newPvc.ObjectMeta.Annotations[k8sclient.NodeName]; ok && pvcNodeName == nodeName {
 			if newPvc.Status.Phase == v1.ClaimPending {
-				pvDir := storagePath + newPvc.ObjectMeta.Namespace + "_" + newPvc.ObjectMeta.Name + "-" + generateRandomSuffix(8)
-				if _, err := os.Stat(pvDir); os.IsNotExist(err) {
-					return true, pvDir
+				if pvDirName, ok := newPvc.ObjectMeta.Annotations[pvDirNameAnnotation]; ok {
+					pvDir := storagePath + pvDirName
+					if _, err := os.Stat(pvDir); os.IsNotExist(err) {
+						return true, pvDir
+					}
 				}
 			}
 		}
@@ -118,9 +122,9 @@ func shouldPvcBeHandled(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVol
 	return false, ""
 }
 
-func shouldDeletePvcBeHandled(pvc v1.PersistentVolumeClaim, nodeName string, kubeClient kubernetes.Interface) bool {
-	pvcNodeName, ok := pvc.ObjectMeta.Annotations[k8sclient.NodeName];
-	pvcIsLocal, _ := k8sclient.StorageClassIsNokiaLocal(*(pvc.Spec.StorageClassName), kubeClient)
+func shouldDeletePvcBeHandled(pvc v1.PersistentVolumeClaim, nodeName string) bool {
+	pvcNodeName, ok := pvc.ObjectMeta.Annotations[k8sclient.NodeName]
+	pvcIsLocal, _ := k8sclient.StorageClassIsNokiaLocal(*(pvc.Spec.StorageClassName))
 	if pvcIsLocal && ok && pvcNodeName == nodeName && pvc.Status.Phase == v1.ClaimBound && pvc.Spec.VolumeName != "" {
 		return true
 	}
@@ -129,7 +133,6 @@ func shouldDeletePvcBeHandled(pvc v1.PersistentVolumeClaim, nodeName string, kub
 
 func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDirPath string) {
 	var projID int = 1
-
 	pvcStorageReq, ok := pvc.Spec.Resources.Requests["storage"]
 	if !ok {
 		log.Println("PvcHandler ERROR: Storage request is empty!")
@@ -142,10 +145,10 @@ func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDi
 		return
 	}
 	if string(projectsContent) != "" {
-		lines := strings.Split(strings.TrimRight(string(projectsContent),"\n"), "\n")
+		lines := strings.Split(strings.TrimRight(string(projectsContent), "\n"), "\n")
 		projid, err := strconv.Atoi(strings.Split(lines[len(lines)-1], ":")[0])
 		if err != nil {
-			log.Println("PvcHandler ERROR: Cannot convert project id from " + lines[len(lines)-2] + " because: " + err.Error())
+			log.Println("PvcHandler ERROR: Cannot convert project id from " + lines[len(lines)-1] + " because: " + err.Error())
 			return
 		}
 		projID = projid + 1
@@ -219,8 +222,8 @@ func (pvcHandler *PvcHandler) createPVStorage(pvc v1.PersistentVolumeClaim, pvDi
 }
 
 // TODO: Relocate to pvHandler and processing it in multiple threads
-func deletePVStorage(pv v1.PersistentVolume, storagePath string){
-	if pv.Spec.PersistentVolumeReclaimPolicy != v1.PersistentVolumeReclaimDelete{
+func deletePVStorage(pv v1.PersistentVolume, storagePath string) {
+	if pv.Spec.PersistentVolumeReclaimPolicy != v1.PersistentVolumeReclaimDelete {
 		return
 	}
 	localVolumePath := pv.Spec.Local.Path
@@ -269,14 +272,14 @@ func removePvDataFromFile(filePath string, searchData string) error {
 	var removedList []string
 	fileContent, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		return errors.New("Cannot read "+ filePath +" file: " + err.Error())
+		return errors.New("Cannot read " + filePath + " file: " + err.Error())
 	}
 	fileContentList := strings.Split(string(fileContent), "\n")
 	removeIdx := 0
 	for idx, data := range fileContentList {
-			if strings.Contains(data, searchData){
-				removeIdx = idx
-			}
+		if strings.Contains(data, searchData) {
+			removeIdx = idx
+		}
 	}
 	removedList = append(removedList, fileContentList[:removeIdx]...)
 	removedList = append(removedList, fileContentList[removeIdx+1:]...)
@@ -290,16 +293,6 @@ func removePvDataFromFile(filePath string, searchData string) error {
 		return errors.New("Cannot modify" + filePath + " file, because: " + err.Error())
 	}
 	return nil
-}
-
-func generateRandomSuffix(suffixlength int) string {
-	charPool := []byte("abcdefghijklmnopqrstuvwxyz1234567890")
-	rand.Seed(time.Now().Unix())
-	bytes := make([]byte, suffixlength)
-	for i := range bytes {
-		bytes[i] = charPool[rand.Intn(len(charPool))]
-	}
-	return string(bytes)
 }
 
 func isChangeEnoughToProceed(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim) bool {
