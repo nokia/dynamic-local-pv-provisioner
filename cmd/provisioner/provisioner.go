@@ -67,16 +67,22 @@ func main() {
 
 func (provisioner *Provisoner) pvcAdded(pvc v1.PersistentVolumeClaim) {
 	_, nodeNameOk := pvc.ObjectMeta.Annotations[k8sclient.NodeName]
-	if pvc.ObjectMeta.Annotations[k8sclient.LocalAnnotation] == k8sclient.LocalScProvisioner && !nodeNameOk && (pvc.Status.Phase != v1.ClaimBound) {
+	pvcIsLocal, _ := k8sclient.StorageClassIsNokiaLocal(*(pvc.Spec.StorageClassName), provisioner.k8sClient)
+	if pvcIsLocal && !nodeNameOk && pvcStatusIsPending(pvc) {
 		provisioner.handlePvc(pvc)
 	}
 }
 
 func (provisioner *Provisoner) pvcChanged(oldPvc v1.PersistentVolumeClaim, newPvc v1.PersistentVolumeClaim) {
 	_, nodeNameOk := newPvc.ObjectMeta.Annotations[k8sclient.NodeName]
-	if newPvc.ObjectMeta.Annotations[k8sclient.LocalAnnotation] == k8sclient.LocalScProvisioner && !nodeNameOk && (newPvc.Status.Phase != v1.ClaimBound) {
+	pvcIsLocal, _ := k8sclient.StorageClassIsNokiaLocal(*(newPvc.Spec.StorageClassName), provisioner.k8sClient)
+	if pvcIsLocal && !nodeNameOk && pvcStatusIsPending(newPvc) {
 		provisioner.handlePvc(newPvc)
 	}
+}
+
+func pvcStatusIsPending(pvc v1.PersistentVolumeClaim) bool {
+	return pvc.Status.Phase == v1.ClaimPending
 }
 
 func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
@@ -104,7 +110,6 @@ func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
 		pvc.ObjectMeta.Annotations = make(map[string]string)
 	}
 	pvc.ObjectMeta.Annotations[k8sclient.NodeName] = node.ObjectMeta.Name
-	// test if could be updated
 	pvc.ObjectMeta.ResourceVersion = ""
 	err = k8sclient.UpdatePvc(pvc, provisioner.k8sClient)
 	if err != nil {
@@ -113,6 +118,5 @@ func (provisioner *Provisoner) handlePvc (pvc v1.PersistentVolumeClaim) {
 }
 
 func init() {
-	// flag.StringVar(&storagePath, "storagepath", "", "The path where VG is mounted and where sig-storage-controller is watching. Mandatory parameter.")
 	flag.StringVar(&kubeConfig, "kubeconfig", "", "Path to a kubeconfig. Optional parameter, only required if out-of-cluster.")
 }
